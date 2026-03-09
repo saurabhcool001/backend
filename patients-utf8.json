@@ -1,0 +1,54 @@
+﻿{
+    "value":  [
+                  {
+                      "id":  "3acf2e2e-49e0-434e-9130-e88a7a399174",
+                      "name":  "Margaret Thomp",
+                      "age":  68,
+                      "surgery_date":  "2026-03-04T10:00:00",
+                      "caregiver_name":  "Sarah Thompson",
+                      "caregiver_phone":  "07700 000123",
+                      "caregiver_email":  "sarah@email.com",
+                      "gp_name":  "Dr. James Wilson",
+                      "gp_phone":  "020 1234 5678",
+                      "medications":  [
+                                          {
+                                              "name":  "Rivaroxaban 10mg",
+                                              "purpose":  "DVT prevention",
+                                              "critical":  true,
+                                              "dose_time":  "08:00",
+                                              "duration_days":  14
+                                          },
+                                          {
+                                              "name":  "Paracetamol 1g",
+                                              "purpose":  "Pain management",
+                                              "critical":  false,
+                                              "dose_times":  [
+                                                                 "08:00",
+                                                                 "14:00",
+                                                                 "20:00"
+                                                             ],
+                                              "duration_days":  7
+                                          },
+                                          {
+                                              "name":  "Naproxen 500mg",
+                                              "purpose":  "Anti-inflammatory",
+                                              "critical":  false,
+                                              "dose_times":  [
+                                                                 "08:00",
+                                                                 "20:00"
+                                                             ],
+                                              "duration_days":  7
+                                          },
+                                          {
+                                              "name":  "Movicol 1 sachet",
+                                              "purpose":  "Constipation prevention",
+                                              "critical":  false,
+                                              "dose_time":  "08:00",
+                                              "duration_days":  14
+                                          }
+                                      ],
+                      "created_at":  "2026-03-08T19:54:22.85367"
+                  }
+              ],
+    "Count":  1
+}
