@@ -223,35 +223,99 @@ async def process_checkin(request: CheckinRequest):
     
     # Generate AI Feedback
     ai_message = ""
-    if claude:
-        prompt = f"""
-        You are 'KneeGuide', an empathetic AI assistant for patients recovering from Knee Replacement surgery.
-        Based on this daily checkin data, write a short, warm, 2-3 sentence response directly to the patient.
-        
-        Pain Score: {request.pain_score}/10
-        Pain Location: {request.pain_location}
-        Swelling: {request.swelling}
-        Mood: {request.mood_score}/5
-        
-        Escalation Level calculated by our rules engine: {escalation['level']}
-        Actions recommended: {', '.join(escalation['actions'])}
-        
-        If it's GREEN, be encouraging. If it's AMBER, be cautious and remind them to rest.
-        If it's RED or CRITICAL, be firm but calm, telling them they must follow the recommended actions.
-        """
+    ai_escalation = escalation['level']
+    ai_flags = escalation['flags']
+
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyCJRyadIFd5juCD8Um2izWLwTMvsF5eitY")
+    
+    # 1. Fetch History
+    historical_data = []
+    if supabase:
         try:
-            message = claude.messages.create(
-                model="claude-3-haiku-20240307",
-                max_tokens=200,
-                temperature=0.3,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            ai_message = message.content[0].text
+            res = supabase.table("daily_checkins") \
+                .select("pain_score, mobility, swelling, wound_status, created_at") \
+                .eq("patient_id", request.patient_id) \
+                .order("created_at", desc=True) \
+                .limit(5) \
+                .execute()
+            if res.data:
+                historical_data = res.data
         except Exception as e:
-            print(f"Claude error: {e}")
-            ai_message = "Your check-in has been recorded. Please follow the actions listed below."
+            print(f"Supabase history error: {e}")
+
+    # 2. Call Gemini
+    if GEMINI_API_KEY:
+        import urllib.request
+        import urllib.error
+        import ssl
+
+        prompt_text = (
+            "You are 'KneeGuide', an expert, empathetic AI physiotherapy assistant for a Knee Replacement patient. "
+            "Analyze their current daily check-in and their last 5 days of history. "
+            "1. Detect trends (e.g., is pain trending up or down? is swelling persisting?). "
+            "2. Determine if the 'Base Escalation' from our simple rule engine is accurate, or if the trend warrants a higher escalation. "
+            "3. Provide exactly ONE JSON output (no markdown block, just raw JSON). "
+            "Format: { "
+            "'advice': '2-3 sentences of empathetic, personalized advice. If green, encourage. If red, be firm about seeking help.', "
+            "'ai_escalation': '<GREEN|AMBER|RED|CRITICAL> - override to a HIGHER severity if trends are worrying, otherwise keep Base.', "
+            "'ai_flags': ['any', 'new', 'subtle_flags_found'] "
+            "}"
+        )
+
+        context_msg = (
+            f"Current Check-in:\n"
+            f"Pain: {request.pain_score}/10 ({request.pain_location})\n"
+            f"Swelling: {request.swelling}\n"
+            f"Wound: {request.wound_status}\n"
+            f"Temp: {request.temperature_feeling}\n"
+            f"Mobility: {request.mobility}\n"
+            f"Mood: {request.mood_score}/5\n\n"
+            f"Base Escalation Rules Engine Result: {escalation['level']} (Flags: {escalation['flags']})\n\n"
+            f"History (Last 5 days):\n{json.dumps(historical_data)}\n\n"
+            f"Respond only with JSON."
+        )
+
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+            payload = json.dumps({
+                "system_instruction": {"parts": [{"text": prompt_text}]},
+                "contents": [{"role": "user", "parts": [{"text": context_msg}]}],
+                "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}
+            }).encode("utf-8")
+
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                response_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+                ai_json = json.loads(response_text)
+                
+                ai_message = ai_json.get("advice", "Your check-in has been recorded.")
+                ai_escalation = ai_json.get("ai_escalation", escalation['level'])
+                
+                # Merge flags
+                new_flags = ai_json.get("ai_flags", [])
+                for f in new_flags:
+                    if f not in ai_flags:
+                        ai_flags.append(f)
+                        
+                # Ensure we never downgrade a server-side escalation
+                severity_map = {"GREEN": 0, "AMBER": 1, "RED": 2, "CRITICAL": 3}
+                if severity_map.get(ai_escalation, 0) < severity_map.get(escalation['level'], 0):
+                    ai_escalation = escalation['level']
+
+        except Exception as e:
+            print(f"Checkin Gemini error: {e}")
+            ai_message = "Your check-in has been logged successfully."
     else:
         ai_message = "Your check-in has been logged successfully based on offline rules."
+
+    # Update the escalation dict with AI enhancements
+    escalation['level'] = ai_escalation
+    escalation['flags'] = ai_flags
 
     # Store in database
     if supabase:
