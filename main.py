@@ -101,6 +101,18 @@ class ChatRequest(BaseModel):
     message: str
     history: List[ChatMessage] = []
 
+class CoachRequest(BaseModel):
+    exercise_name: str
+    current_angle: int
+    target_angle: int
+    current_rep: int
+    total_reps: int
+    current_set: int
+    total_sets: int
+    pain_scores: List[int] = []
+    days_post_op: int = 7
+    phase: str = "exercising"  # exercising, resting, completed
+
 # ---------------------------------------------------------
 # Escalation Engine Logic (Server-Side)
 # ---------------------------------------------------------
@@ -421,6 +433,94 @@ async def chat_interaction(request: ChatRequest):
         "reply": clean_reply,
         "escalation_detected": is_escalated
     }
+
+@app.post("/api/exercise/coach")
+async def exercise_coach(request: CoachRequest):
+    """
+    AI exercise coaching using Gemini. Returns short, actionable tips
+    based on current exercise state (angle, reps, pain).
+    """
+    import urllib.request
+    import urllib.error
+    import ssl
+
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyCJRyadIFd5juCD8Um2izWLwTMvsF5eitY")
+
+    angle_diff = request.target_angle - request.current_angle
+    avg_pain = round(sum(request.pain_scores) / len(request.pain_scores), 1) if request.pain_scores else 0
+
+    system_prompt = (
+        "You are an expert physiotherapy AI coach for a patient recovering from Knee Replacement surgery. "
+        "You are watching them exercise in real-time via AR camera. "
+        "Give exactly ONE short coaching tip (max 12 words). Be encouraging, specific, and practical. "
+        "Do NOT use medical jargon. Do NOT say 'Great job' every time — vary your encouragement. "
+        "If their angle is close to target (within 10°), praise their form. "
+        "If pain score is high (>=7), advise them to ease off gently. "
+        "If they are resting between sets, give a recovery tip. "
+        "If they completed the exercise, give a brief motivational summary sentence (max 20 words)."
+    )
+
+    context_msg = (
+        f"Exercise: {request.exercise_name}\n"
+        f"Phase: {request.phase}\n"
+        f"Current knee angle: {request.current_angle}°, Target: {request.target_angle}°, Difference: {angle_diff}°\n"
+        f"Rep {request.current_rep}/{request.total_reps}, Set {request.current_set}/{request.total_sets}\n"
+        f"Past pain scores: {request.pain_scores} (avg: {avg_pain})\n"
+        f"Days since surgery: {request.days_post_op}\n"
+        f"Give ONE coaching tip for this exact moment."
+    )
+
+    tip = ""
+    encouragement = ""
+
+    if GEMINI_API_KEY:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+
+            payload = json.dumps({
+                "system_instruction": {"parts": [{"text": system_prompt}]},
+                "contents": [{"role": "user", "parts": [{"text": context_msg}]}],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 60
+                }
+            }).encode("utf-8")
+
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                tip = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+                print(f"Coach Gemini OK: {tip}")
+
+        except Exception as e:
+            print(f"Coach Gemini error: {e}")
+            tip = ""
+
+    # Smart fallback if Gemini fails
+    if not tip:
+        if request.phase == "completed":
+            tip = f"Well done! You completed {request.total_reps}x{request.total_sets} of {request.exercise_name}."
+        elif request.phase == "resting":
+            tip = "Breathe deeply and relax your leg. Stay hydrated."
+        elif avg_pain >= 7:
+            tip = "Ease off gently — listen to your body."
+        elif angle_diff <= 10:
+            tip = f"Almost there! Just {angle_diff}° more to your target."
+        elif angle_diff <= 25:
+            tip = f"Good progress! Push {angle_diff}° more if comfortable."
+        else:
+            tip = "Slow and steady — focus on smooth movement."
+
+    return {
+        "tip": tip,
+        "angle_diff": angle_diff,
+        "avg_pain": avg_pain
+    }
+
 
 if __name__ == "__main__":
     import uvicorn
